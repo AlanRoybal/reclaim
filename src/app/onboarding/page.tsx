@@ -25,6 +25,7 @@ function Onboarding() {
   const [consentBusy, setConsentBusy] = useState(false);
 
   const [texts, setTexts] = useState("");
+  const [styleName, setStyleName] = useState("");
   const [textBusy, setTextBusy] = useState(false);
   const [textStatus, setTextStatus] = useState<string | null>(null);
 
@@ -62,24 +63,22 @@ function Onboarding() {
 
   async function uploadTexts() {
     setTextBusy(true);
-    setTextStatus(null);
+    setTextStatus("Saving and analyzing your style — this can take a minute…");
     try {
-      const res = await apiFetch("/api/upload", {
+      const res = await apiFetch("/api/styles", {
         method: "POST",
-        body: JSON.stringify({ kind: "texts", content: texts }),
+        body: JSON.stringify({ name: styleName, content: texts }),
       });
       const d = await res.json();
       if (!res.ok) {
         setTextStatus(d.error);
         return;
       }
-      setTextStatus(`Saved ${d.messageCount} messages. Analyzing your style…`);
-      const prof = await apiFetch("/api/style-profile", { method: "POST" });
       setTextStatus(
-        prof.ok
-          ? `Saved ${d.messageCount} messages — style profile ready.`
-          : `Saved ${d.messageCount} messages.`
+        `“${styleName.trim() || "New style"}” is ready and now active (${d.messageCount} messages). Swap styles in Settings.`
       );
+      setStyleName("");
+      setTexts("");
     } finally {
       setTextBusy(false);
     }
@@ -231,7 +230,9 @@ function Onboarding() {
           <h2 className="font-semibold">2 · How you write</h2>
           <p className="mt-1 text-sm text-stone-400">
             Paste a batch of your own sent messages, one per line. Slang, catchphrases, lowercase habits — all of
-            it helps. Links, emails, and phone numbers are removed automatically.
+            it helps. Links, emails, and phone numbers are removed automatically. Make as many named styles as
+            you like — texts with friends for a “Casual” style, work emails for a “Business” one — and switch
+            the active style in Settings.
           </p>
           <textarea
             value={texts}
@@ -240,15 +241,24 @@ function Onboarding() {
             placeholder={"omw lol\nnah fr that's wild\nbet, see u at 8"}
             className="mt-3 w-full rounded-lg border border-stone-700 bg-stone-950 p-3 text-sm transition focus:border-amber-600 focus:outline-none"
           />
-          <button onClick={uploadTexts} disabled={!texts.trim() || textBusy} className={`${btn.primary} mt-3`}>
-            {textBusy ? (
-              <>
-                <Spinner /> Saving…
-              </>
-            ) : (
-              "Save my texts"
-            )}
-          </button>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <input
+              value={styleName}
+              onChange={(e) => setStyleName(e.target.value)}
+              placeholder="Name this style (e.g. Casual)"
+              disabled={textBusy}
+              className="w-56 rounded-lg border border-stone-700 bg-stone-950 px-3 py-2 text-sm transition focus:border-amber-600 focus:outline-none"
+            />
+            <button onClick={uploadTexts} disabled={!texts.trim() || textBusy} className={btn.primary}>
+              {textBusy ? (
+                <>
+                  <Spinner /> Saving…
+                </>
+              ) : (
+                "Create style"
+              )}
+            </button>
+          </div>
           {textStatus && <p className="rise-in mt-2 text-sm text-stone-300">{textStatus}</p>}
         </section>
 

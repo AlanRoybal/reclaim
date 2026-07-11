@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { verifyRequest } from "@/lib/server/auth";
-import { getObjectText, userPrefix } from "@/lib/server/s3";
+import { getObjectText } from "@/lib/server/s3";
 import { embed, topKSimilar } from "@/lib/server/embeddings";
+import { activeStylePrefix } from "@/lib/server/styles";
 
 /**
  * Conversation mode.
@@ -75,12 +76,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "couldn't hear anything — try again closer to the mic" }, { status: 422 });
     }
 
-    // Build the user's style context (same tiers as /api/style).
-    const prefix = userPrefix(user.sub);
+    // Build the user's style context from the active style profile (same tiers as /api/style).
+    const prefix = await activeStylePrefix(user.sub);
     const [profileText, embText, corpusText] = await Promise.all([
-      getObjectText(`${prefix}texts/profile.json`),
-      getObjectText(`${prefix}texts/embeddings.json`),
-      getObjectText(`${prefix}texts/corpus.json`),
+      getObjectText(`${prefix}profile.json`),
+      getObjectText(`${prefix}embeddings.json`),
+      getObjectText(`${prefix}corpus.json`),
     ]);
     let style = "";
     if (profileText) {

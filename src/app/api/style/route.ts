@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { verifyRequest } from "@/lib/server/auth";
-import { getObjectText, userPrefix } from "@/lib/server/s3";
+import { getObjectText } from "@/lib/server/s3";
 import { embed, topKSimilar } from "@/lib/server/embeddings";
+import { activeStylePrefix } from "@/lib/server/styles";
 
 /**
  * Restyle a recognized sentence.
@@ -49,10 +50,12 @@ export async function POST(req: Request) {
     "You rewrite a sentence so it keeps the exact same meaning. " +
     "Reply with ONLY the rewritten sentence — no quotes, no explanation.";
 
+  // Read from the active style profile ("Casual", "Business", …).
+  const stylePfx = await activeStylePrefix(user.sub);
   const [profileText, corpusText, embText] = await Promise.all([
-    getObjectText(`${userPrefix(user.sub)}texts/profile.json`),
-    getObjectText(`${userPrefix(user.sub)}texts/corpus.json`),
-    getObjectText(`${userPrefix(user.sub)}texts/embeddings.json`),
+    getObjectText(`${stylePfx}profile.json`),
+    getObjectText(`${stylePfx}corpus.json`),
+    getObjectText(`${stylePfx}embeddings.json`),
   ]);
   if (profileText) {
     const { profile } = JSON.parse(profileText) as { profile: string };

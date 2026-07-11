@@ -15,6 +15,16 @@ interface VoiceLibrary {
   voices: VoiceClone[];
   activeId: string | null;
 }
+interface StyleProfileMeta {
+  id: string;
+  name: string;
+  createdAt: string;
+  messageCount: number;
+}
+interface StyleLibrary {
+  profiles: StyleProfileMeta[];
+  activeId: string | null;
+}
 
 export default function SettingsPage() {
   return (
@@ -28,7 +38,9 @@ function Settings() {
   const [mode, setMode] = useState<SpeakMode>("generic");
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [library, setLibrary] = useState<VoiceLibrary | null>(null);
+  const [styles, setStyles] = useState<StyleLibrary | null>(null);
   const [voiceBusy, setVoiceBusy] = useState<string | null>(null); // voiceId being changed
+  const [styleBusy, setStyleBusy] = useState<string | null>(null); // style id being changed
   const [deleting, setDeleting] = useState(false);
   const router = useRouter();
 
@@ -40,7 +52,36 @@ function Settings() {
       .then((r) => r.json())
       .then(setLibrary)
       .catch(() => setLibrary({ voices: [], activeId: null }));
+    apiFetch("/api/styles")
+      .then((r) => r.json())
+      .then(setStyles)
+      .catch(() => setStyles({ profiles: [], activeId: null }));
   }, []);
+
+  async function selectStyle(id: string) {
+    setStyleBusy(id);
+    try {
+      const res = await apiFetch("/api/styles", { method: "PATCH", body: JSON.stringify({ id }) });
+      if (res.ok) setStyles(await res.json());
+    } finally {
+      setStyleBusy(null);
+    }
+  }
+
+  async function removeStyle(profile: StyleProfileMeta) {
+    if (!confirm(`Delete “${profile.name}”? This removes the style and its stored messages permanently.`))
+      return;
+    setStyleBusy(profile.id);
+    try {
+      const res = await apiFetch("/api/styles", {
+        method: "DELETE",
+        body: JSON.stringify({ id: profile.id }),
+      });
+      if (res.ok) setStyles(await res.json());
+    } finally {
+      setStyleBusy(null);
+    }
+  }
 
   async function selectVoice(voiceId: string) {
     setVoiceBusy(voiceId);
@@ -199,6 +240,68 @@ function Settings() {
                 </span>
               </label>
             ))}
+          </div>
+
+          {/* Style library — which "you" does the rewriting */}
+          <div className="mt-5 border-t border-stone-800 pt-4">
+            <h3 className="text-sm font-semibold">Your styles</h3>
+            <p className="mt-1 text-sm text-stone-400">
+              The active style drives “Like me” rewriting and conversation replies. Create new styles on the{" "}
+              <a href="/onboarding" className="text-amber-400 underline-offset-2 hover:underline">
+                My voice
+              </a>{" "}
+              page — e.g. “Casual” from texts with friends, “Business” from work messages.
+            </p>
+            {styles === null ? (
+              <div className="mt-3 h-12 animate-pulse rounded-lg bg-stone-800/60" />
+            ) : styles.profiles.length === 0 ? (
+              <p className="mt-3 rounded-lg border border-dashed border-stone-700 p-4 text-sm text-stone-400">
+                No styles yet — “Like me” has nothing to imitate until you save some of your messages.
+              </p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {styles.profiles.map((p) => {
+                  const active = styles.activeId === p.id;
+                  const busy = styleBusy === p.id;
+                  return (
+                    <li
+                      key={p.id}
+                      className={`flex items-center justify-between gap-3 rounded-lg border p-3 transition ${
+                        active ? "border-amber-700 bg-amber-950/30" : "border-stone-800 bg-stone-950/40"
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {p.name}
+                          {active && <span className="ml-2 text-xs font-semibold text-amber-400">Active</span>}
+                        </p>
+                        <p className="text-xs text-stone-500">{p.messageCount} messages</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {busy ? (
+                          <Spinner className="h-4 w-4 text-stone-400" />
+                        ) : (
+                          <>
+                            {!active && (
+                              <button onClick={() => selectStyle(p.id)} className={`${btn.secondary} px-3 py-1.5`}>
+                                Use
+                              </button>
+                            )}
+                            <button
+                              onClick={() => removeStyle(p)}
+                              aria-label={`Delete ${p.name}`}
+                              className="rounded-lg px-2 py-1.5 text-sm text-stone-500 transition hover:bg-rose-950/50 hover:text-rose-300"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         </section>
 

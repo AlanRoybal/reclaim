@@ -17,7 +17,7 @@ Quick phrases: holding up **1–5 fingers** at the start of a clip triggers a fi
 
 - **Frontend** — Next.js 16 (App Router) + TypeScript + Tailwind. Pages: `/app` (Speak), `/onboarding` (My voice), `/settings`.
 - **Recognition** — Gemini (`gemini-flash-latest`) ingests the recorded clip natively (`/api/recognize`).
-- **Style** — DigitalOcean Gradient serverless inference (Llama 3.3 70B): an LLM-distilled style profile + few-shot examples from the user's texts rewrite each sentence in their voice (`/api/style`, `/api/style-profile`). Toggle "Like me" ↔ "Plain" in Settings.
+- **Style** — DigitalOcean Gradient serverless inference (Llama 3.3 70B): an LLM-distilled style profile + few-shot examples from the user's texts rewrite each sentence in their voice (`/api/style`). A **style library** (`/api/styles`) holds multiple named profiles ("Casual", "Business", …), each with its own corpus, embeddings, and style card — one active at a time, swappable in Settings. Toggle "Like me" ↔ "Plain" in Settings.
 - **Voice** — ElevenLabs Instant Voice Cloning with a **voice library**: create multiple named clones, switch the active one, delete any (`/api/voices`). Flash v2.5 TTS; browser speech as last resort.
 - **Conversation mode** — the partner speaks, Gemini transcribes, Llama 3.3 on DO drafts three tappable replies in your style (`/api/converse`, `/converse`).
 - **Semantic style matching** — the corpus is embedded with DO serverless embeddings (GTE Large); at speak time the most similar past messages become the few-shot examples.
