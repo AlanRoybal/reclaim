@@ -366,9 +366,11 @@ def record_button(slide, cx, cy, r=0.30):
 TILE = 0.78  # architecture icon tile size
 
 
-def tile(slide, cx, cy, color, label, glyph=None, text_dark=False):
-    """AWS-diagram-style service tile: colored rounded square + white glyph
-    + two-line label beneath. Returns all shapes (for entrance animation)."""
+def tile(slide, cx, cy, color, label, glyph=None, text_dark=False, img=None,
+         img_size=0.44):
+    """AWS-diagram-style service tile: colored rounded square + brand icon
+    (PNG in presentation/icons/) + two-line label beneath. Returns all
+    shapes (for entrance animation)."""
     shapes = []
     t = box(slide, cx - TILE / 2, cy - TILE / 2, TILE, TILE, radius=0.18)
     fill_grad_v(t, color, color)
@@ -376,7 +378,13 @@ def tile(slide, cx, cy, color, label, glyph=None, text_dark=False):
     shadow(t, blur=0.14, dist=0.045, alpha=45)
     shapes.append(t)
     ink = "1C1917" if text_dark else "FFFFFF"
-    if glyph:
+    if img:
+        pic = slide.shapes.add_picture(
+            f"presentation/icons/{img}.png",
+            IN(cx - img_size / 2), IN(cy - img_size / 2), IN(img_size), IN(img_size))
+        pic.shadow.inherit = False
+        shapes.append(pic)
+    elif glyph:
         shapes += glyph(slide, cx, cy, ink)
     lbl = text(slide, cx - 1.05, cy + TILE / 2 + 0.05, 2.1, 0.55,
                [P([R(label, size=10.5, color=STONE3)], spacing=1.05)],
@@ -906,10 +914,10 @@ kicker(s, 0.6, 0.42, "ARCHITECTURE")
 hh = text(s, 0.6, 0.80, 7.5, 0.5,
           [P([R("Sign-to-speech serverless backend", size=20, bold=True, color=INK)])])
 
-VIOLET = "8B5CF6"; ORANGE = "FF9900"; HFYELL = "FFD21E"; ELDARK = "26211E"
+VIOLET = "8B5CF6"; AWSRED = "DD344C"; EC2ORG = "ED7100"; HFYELL = "FFD21E"; ELDARK = "26211E"
 
 nodes = {}
-nodes['auth'] = tile(s, 1.35, 2.60, ROSE6, "AWS Amplify\nAuth", g_lock)
+nodes['auth'] = tile(s, 1.35, 2.60, AWSRED, "AWS Amplify\nAuth", img="awsamplify", img_size=0.62)
 # client node — outlined box, as in the reference diagram
 cbx, cby, cbw, cbh = 2.225, 3.45, 1.05, 1.40
 cb = box(s, cbx, cby, cbw, cbh, MSO_SHAPE.RECTANGLE)
@@ -923,17 +931,17 @@ clbl = text(s, cbx, 4.32, cbw, 0.35, [P([R("Client", size=11.5, color=STONE2)])]
 csub = text(s, cbx - 0.4, 4.90, cbw + 0.8, 0.3,
             [P([R("Web · Expo mobile", size=9.5, color=STONE5)])], align=PP_ALIGN.CENTER)
 nodes['client'] = [cb, mon, stand, clbl, csub]
-nodes['api'] = tile(s, 4.70, 4.15, DOBLUE, "Next.js API\nDO App Platform", g_cloud)
-nodes['gemini'] = tile(s, 4.70, 1.70, VIOLET, "Gemini\nsign recognition", g_video)
-nodes['embed'] = tile(s, 7.00, 1.70, DOBLUE, "Gradient Embeddings\nGTE-Large", g_dots)
-nodes['spaces'] = tile(s, 9.40, 1.70, DOBLUE, "DO Spaces\ncorpus · PII-redacted", g_bucket)
-nodes['infer'] = tile(s, 7.00, 4.15, DOBLUE, "Gradient Inference\nLlama 3.3 70B", g_star)
-nodes['eleven'] = tile(s, 9.40, 4.15, ELDARK, "ElevenLabs\nclone + Flash TTS", g_eq)
-nodes['valkey'] = tile(s, 11.70, 4.15, DOBLUE, "Managed Valkey\nTTS cache", g_bolt)
-nodes['f5'] = tile(s, 2.75, 6.35, DOBLUE, "DO GPU Droplet\nF5-TTS self-hosted", g_chip)
-nodes['ec2'] = tile(s, 5.15, 6.35, ORANGE, "EC2 GPU\nLoRA fine-tune (TRL)", g_chip)
-nodes['hf'] = tile(s, 7.55, 6.35, HFYELL, "Hugging Face\ndedicated endpoint", g_text, text_dark=True)
-nodes['qwen'] = tile(s, 9.95, 6.35, DOBLUE, "Qwen3 TTS\nneutral fallback", g_speaker)
+nodes['api'] = tile(s, 4.70, 4.15, DOBLUE, "Next.js API\nDO App Platform", img="digitalocean")
+nodes['gemini'] = tile(s, 4.70, 1.70, VIOLET, "Gemini\nsign recognition", img="googlegemini")
+nodes['embed'] = tile(s, 7.00, 1.70, DOBLUE, "Gradient Embeddings\nGTE-Large", img="digitalocean")
+nodes['spaces'] = tile(s, 9.40, 1.70, DOBLUE, "DO Spaces\ncorpus · PII-redacted", img="digitalocean")
+nodes['infer'] = tile(s, 7.00, 4.15, DOBLUE, "Gradient Inference\nLlama 3.3 70B", img="meta")
+nodes['eleven'] = tile(s, 9.40, 4.15, ELDARK, "ElevenLabs\nclone + Flash TTS", img="elevenlabs")
+nodes['valkey'] = tile(s, 11.70, 4.15, DOBLUE, "Managed Valkey\nTTS cache", img="digitalocean")
+nodes['f5'] = tile(s, 2.75, 6.35, DOBLUE, "DO GPU Droplet\nF5-TTS self-hosted", img="digitalocean")
+nodes['ec2'] = tile(s, 5.15, 6.35, EC2ORG, "EC2 GPU\nLoRA fine-tune (TRL)", img="amazonec2", img_size=0.62)
+nodes['hf'] = tile(s, 7.55, 6.35, HFYELL, "Hugging Face\ndedicated endpoint", img="huggingface")
+nodes['qwen'] = tile(s, 9.95, 6.35, DOBLUE, "Qwen3 TTS\nneutral fallback", img="qwen")
 
 HT = TILE / 2
 arrows = [
