@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { verifyRequest } from "@/lib/server/auth";
 import { presignPut, putJson, userPrefix, getObjectText } from "@/lib/server/s3";
 import { redactPII } from "@/lib/server/redact";
+import { embed } from "@/lib/server/embeddings";
 
 /**
  * Onboarding uploads.
@@ -26,7 +27,19 @@ export async function POST(req: Request) {
       lines,
       uploadedAt: new Date().toISOString(),
     });
-    return NextResponse.json({ ok: true, messageCount: lines.length });
+
+    // Embed the corpus (DO serverless embeddings) so personal-mode prompts can
+    // retrieve the most *similar* past messages, not just a random sample.
+    let embedded = false;
+    try {
+      const toEmbed = lines.slice(0, 500);
+      const vectors = await embed(toEmbed);
+      await putJson(`${prefix}texts/embeddings.json`, { lines: toEmbed, vectors });
+      embedded = true;
+    } catch {
+      // Non-fatal: style route falls back to length-based sampling.
+    }
+    return NextResponse.json({ ok: true, messageCount: lines.length, embedded });
   }
 
   if (body.kind === "recording") {

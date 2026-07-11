@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { verifyRequest } from "@/lib/server/auth";
 import { getObjectText, userPrefix } from "@/lib/server/s3";
+import { embed, topKSimilar } from "@/lib/server/embeddings";
 
 /**
  * Restyle a recognized sentence.
@@ -48,25 +49,39 @@ export async function POST(req: Request) {
     "You rewrite a sentence so it keeps the exact same meaning. " +
     "Reply with ONLY the rewritten sentence — no quotes, no explanation.";
 
-  const [profileText, corpusText] = await Promise.all([
+  const [profileText, corpusText, embText] = await Promise.all([
     getObjectText(`${userPrefix(user.sub)}texts/profile.json`),
     getObjectText(`${userPrefix(user.sub)}texts/corpus.json`),
+    getObjectText(`${userPrefix(user.sub)}texts/embeddings.json`),
   ]);
   if (profileText) {
     const { profile } = JSON.parse(profileText) as { profile: string };
     system += `\n\nWrite the sentence the way THIS person texts. Their style profile:\n${profile}`;
   }
-  if (corpusText) {
-    const { lines } = JSON.parse(corpusText) as { lines: string[] };
-    const examples = sampleLines(lines, profileText ? 10 : 20);
-    if (examples.length > 0) {
-      system +=
-        (profileText
-          ? "\n\nExamples of how they write:\n"
-          : "\n\nWrite the sentence the way THIS person texts. Match their slang, phrasing, " +
-            "catchphrases, capitalization, and punctuation. Examples of how they write:\n") +
-        examples.map((e) => `- ${e}`).join("\n");
+
+  // Semantic retrieval: pull the past messages most similar to what's being
+  // said (DO serverless embeddings). Falls back to length-based sampling.
+  let examples: string[] = [];
+  if (embText) {
+    try {
+      const { lines, vectors } = JSON.parse(embText) as { lines: string[]; vectors: number[][] };
+      const [query] = await embed([text.trim()]);
+      examples = topKSimilar(query, vectors, lines, profileText ? 10 : 15);
+    } catch {
+      /* fall through to sampling */
     }
+  }
+  if (examples.length === 0 && corpusText) {
+    const { lines } = JSON.parse(corpusText) as { lines: string[] };
+    examples = sampleLines(lines, profileText ? 10 : 20);
+  }
+  if (examples.length > 0) {
+    system +=
+      (profileText
+        ? "\n\nExamples of how they write:\n"
+        : "\n\nWrite the sentence the way THIS person texts. Match their slang, phrasing, " +
+          "catchphrases, capitalization, and punctuation. Examples of how they write:\n") +
+      examples.map((e) => `- ${e}`).join("\n");
   }
 
   try {
