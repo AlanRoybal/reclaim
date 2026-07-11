@@ -1,36 +1,31 @@
 # Reclaim
 
-**Your signs. Your words. Your voice.** Reclaim gives voiceless users their voice back: sign a phrase in ASL to the camera, and the app speaks it aloud — in *your* slang, in *your* voice.
+**Your signs. Your words. Your voice.** Reclaim gives voiceless users their voice back: sign a phrase to the camera, and the app speaks it aloud — in *your* slang, in *your* voice.
 
 ## How it works
 
 ```
-record clip → MediaPipe hand landmarks (in-browser)
-           → pause-based segmentation into isolated signs
-           → DTW nearest-neighbor classification vs your calibrated templates
-           → editable gloss sequence  e.g. ["ME","WANT","COFFEE"]
-           → style LLM (DO Gradient dedicated inference) stitches glosses into
-             a fluent sentence in your personal style: "lemme grab a coffee"
-           → spoken in your ElevenLabs voice clone (Web Speech fallback)
+record clip → Gemini translates the signing (native video input)
+           → editable text — nothing is spoken without your review
+           → style LLM (DO Gradient) rewrites it the way YOU text
+           → spoken in your voice (ElevenLabs clone, chosen from your voice library)
 ```
 
-Deliberate scoping: **continuous ASL translation is unsolved** — Reclaim does record-then-translate over a fixed ~24-sign vocabulary with brief pauses between signs (isolated-sign recognition is the part with proven 94–99% accuracy). The user can edit recognized glosses before speaking, and the LLM stitching step is where personality is applied.
+Quick phrases: holding up **1–5 fingers** at the start of a clip triggers a fixed message (1 = "I want a coffee", 2 = "I'm tired, I'm going to head home", …) — deterministic where fluent ASL recognition isn't. Everything else goes through real translation, and every result is editable before it's spoken.
 
 ## Stack
 
-- **Frontend** — Next.js 16 (App Router) + TypeScript + Tailwind. Pages: `/login`, `/onboarding`, `/app` (record → glosses → sentence → speak), `/settings`.
-- **ASL** — two recognition modes:
-  - *My signs* (default): `@mediapipe/tasks-vision` HandLandmarker fully in-browser; per-user calibrated templates, TF.js/DTW classifier in `src/lib/asl/`. Reliable, private, fixed vocabulary.
-  - *AI vision (beta)*: frames sampled from the clip are translated by a multimodal model (Llama 4 Maverick) on DO Gradient serverless (`/api/recognize`). No vocabulary limit or calibration; accuracy on fluent ASL unproven — output is always editable before speaking.
-- **Style LLM** — DigitalOcean Gradient dedicated inference, OpenAI-compatible (`/api/style`). Personal mode builds a few-shot system prompt from the user's uploaded texts. Falls back to a rule-based stitcher when unconfigured.
-- **Voice** — ElevenLabs Instant Voice Cloning (`/api/voice/clone`, `/api/speak`, Flash v2.5), consent-gated. Falls back to the browser Web Speech API.
-- **Auth/storage** — AWS Cognito (email + password) and a private, encrypted S3 bucket per-user prefix (`users/{sub}/`). PII (URLs/emails/phones) is redacted from the text corpus before storage.
+- **Frontend** — Next.js 16 (App Router) + TypeScript + Tailwind. Pages: `/app` (Speak), `/onboarding` (My voice), `/settings`.
+- **Recognition** — Gemini (`gemini-flash-latest`) ingests the recorded clip natively (`/api/recognize`).
+- **Style** — DigitalOcean Gradient serverless inference (Llama 3.3 70B): an LLM-distilled style profile + few-shot examples from the user's texts rewrite each sentence in their voice (`/api/style`, `/api/style-profile`). Toggle "Like me" ↔ "Plain" in Settings.
+- **Voice** — ElevenLabs Instant Voice Cloning with a **voice library**: create multiple named clones, switch the active one, delete any (`/api/voices`). Flash v2.5 TTS; browser speech as last resort.
+- **Auth/storage** — AWS Cognito-ready (POC runs as a demo user) + private, encrypted S3 per-user prefix. PII (URLs/emails/phones) is redacted from the text corpus before storage.
 
 ## Consent & privacy (non-negotiable)
 
 Voiceprints are biometric data (GDPR Art. 9, Illinois BIPA, Texas CUBI). Reclaim:
 - blocks all voice upload/cloning until an explicit written consent record is stored (`/api/consent`);
-- lets users revoke + erase everything (S3 data, consent record, and the ElevenLabs clone itself) via **Settings → Delete my data**.
+- lets users revoke + erase everything — S3 data, consent record, and every ElevenLabs clone — via **Settings → Delete my data**.
 
 ## Running
 
@@ -39,37 +34,28 @@ npm install
 npm run dev   # http://localhost:3000
 ```
 
-`.env.local` (Cognito/S3 values are pre-provisioned):
+`.env.local` (see `.env.example`):
 
 ```
-NEXT_PUBLIC_COGNITO_USER_POOL_ID=…
+NEXT_PUBLIC_COGNITO_USER_POOL_ID=…   # POC runs without login
 NEXT_PUBLIC_COGNITO_CLIENT_ID=…
 AWS_REGION=us-east-1
 S3_BUCKET=…
-DO_INFERENCE_BASE_URL=   # OpenAI-compatible DO endpoint (optional — fallback stitcher without it)
-DO_INFERENCE_API_KEY=
-DO_INFERENCE_MODEL=
-ELEVENLABS_API_KEY=      # optional — Web Speech fallback without it
+DO_INFERENCE_BASE_URL=https://inference.do-ai.run/v1
+DO_INFERENCE_API_KEY=…               # DO API token
+DO_INFERENCE_MODEL=llama3.3-70b-instruct
+ELEVENLABS_API_KEY=…                 # Starter tier or above for cloning
+GEMINI_API_KEY=…
+GEMINI_MODEL=gemini-flash-latest
 ```
 
-Server AWS credentials come from the default AWS CLI chain.
+### Using the app
 
-### Demo flow
+1. **My voice** — consent → paste your texts (builds your style profile) → record/upload 1–3 minutes of speech → name and create a voice. Keep several; switch anytime.
+2. **Speak** — tap record, sign (or hold up 1–5 fingers for a quick phrase), stop. Fix the text if needed, then **Say it** — the room hears you.
+3. **Settings** — pick the active voice, toggle "Like me" ↔ "Plain", or delete all your data.
 
-1. Create an account (`/login`) → grant consent, paste some of your texts, record 1–3 min of voice (`/onboarding`).
-2. `/app` → **Calibrate**: record 1–2 examples of each vocabulary sign you'll use.
-3. **Speak**: record a phrase (pause briefly between signs) → fix any glosses → **Say it**.
-4. `/settings`: toggle **Generic AI ↔ Personal Me**, voice on/off, delete-my-data.
+## On the shelf (infra kept in-repo, not wired into the app)
 
-## Phase 2 — implemented
-
-1. **Per-user LoRA fine-tune** (`training/`) — `prep_data.py` reverse-translates the user's real messages into gloss→message SFT pairs (teacher: Llama 3.3 70B), `train_model.py` LoRA-tunes Qwen2.5-1.5B-Instruct with TRL `SFTTrainer` and exports merged Safetensors for DO **BYOM**, `provision.sh` spins the GPU Droplet. Drop a `users/{sub}/model.json` pointing at the dedicated-inference deployment and `/api/style` routes that user's personal mode to their own model (`source: personal-finetuned`). See `training/README.md` for the runbook + costs.
-2. **Self-hosted voice** (`services/f5-tts/`) — FastAPI service wrapping F5-TTS (MIT, 2–3 GB VRAM) zero-shot cloning; `deploy.sh` deploys to a DO GPU Droplet. Voice ladder in `/api/speak`: **F5-TTS → ElevenLabs clone → ElevenLabs premade → Web Speech**, each tier degrading gracefully. Set `F5_TTS_URL` + `F5_TTS_API_KEY` to activate.
-3. **Vocabulary growth** — 24 word signs **+ A–Z fingerspelling** (consecutive letters collapse into words: C A T → CAT). A TF.js MLP classifier trains on-device once every calibrated sign has 3+ examples; below that, DTW template matching.
-4. **Style profile tier** (`/api/style-profile`) — an LLM-distilled style card (slang, catchphrases, punctuation habits) cached in S3 and injected into personal prompts; generated automatically after the texts upload. Middle tier between raw few-shot and the LoRA fine-tune.
-
-### Further work
-
-- Batch multiple users' LoRA adapters onto one dedicated deployment to amortize GPU cost
-- TinyStyler-style authorship embeddings as a zero-training personalization tier
-- Continuous-sign segmentation research (co-articulation) to relax the pause requirement
+- `training/` — per-user LoRA fine-tune of Qwen2.5-1.5B (TRL) → DO BYOM → dedicated inference, for when few-shot style stops being enough. Runbook + provisioning script included.
+- `services/f5-tts/` — self-hosted, MIT-licensed voice cloning (F5-TTS) on a DO GPU droplet, for first-party voice biometrics at scale.

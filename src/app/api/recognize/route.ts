@@ -1,31 +1,22 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 import { verifyRequest } from "@/lib/server/auth";
 
 /**
- * AI-vision ASL recognition (beta). Two backends:
+ * Sign recognition: the recorded clip is translated by Gemini, which ingests
+ * video natively (signing is motion, so full video beats sampled frames).
  *
- * 1. Gemini (preferred, GEMINI_API_KEY): the client sends the actual recorded
- *    clip; Gemini ingests video natively, so it sees the motion between
- *    frames — signing is movement, so this matters.
- * 2. Llama 4 Maverick on DO Gradient serverless (fallback): the client sends
- *    frames sampled from the clip.
- *
- * Neither is proven on fluent ASL — the UI keeps results editable and the
- * local calibrated classifier remains the default mode.
- * GET reports which backend is active so the client knows what to upload.
+ * Includes deterministic quick-phrase triggers: holding up N fingers at the
+ * start of the clip maps to a fixed message — reliable for vision models in a
+ * way fluent ASL is not. Clips without a finger count translate normally, and
+ * the result is always editable before anything is spoken.
  */
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
-const VISION_MODEL = process.env.DO_VISION_MODEL ?? "llama-4-maverick";
-const MAX_FRAMES = 16;
 const MAX_VIDEO_BYTES = 15 * 1024 * 1024; // inline Gemini requests cap at ~20MB total
 
-// Demo triggers: holding up N fingers at the start of the clip maps to a
-// predetermined message. Finger counting is trivially reliable for vision
-// models (unlike fluent ASL), which makes live demos deterministic while the
-// style-rewrite and voice-clone stages still run for real.
-const DEMO_TRIGGERS = [
+// Quick phrases: N fingers up → fixed message. Plain English on purpose — the
+// personal-style stage rewrites them into the user's own voice afterwards.
+const QUICK_PHRASES = [
   "I want a coffee",
   "I'm tired, I'm going to head home",
   "Thank you so much for coming today",
@@ -39,116 +30,60 @@ const INSTRUCTIONS =
   "SPECIAL RULE (takes priority over everything else): if in the opening moments the person " +
   "clearly holds up N fingers on one hand, do not translate anything — reply with EXACTLY the " +
   "corresponding message:\n" +
-  DEMO_TRIGGERS.map((m, i) => `${i + 1} finger${i === 0 ? "" : "s"} up → ${m}`).join("\n") +
+  QUICK_PHRASES.map((m, i) => `${i + 1} finger${i === 0 ? "" : "s"} up → ${m}`).join("\n") +
   "\n\nOtherwise, translate the signing normally. " +
   "If you cannot identify any signing or finger count, reply exactly: UNRECOGNIZED";
-
-export async function GET(req: Request) {
-  const user = await verifyRequest(req);
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const backend = process.env.GEMINI_API_KEY
-    ? "video"
-    : process.env.DO_INFERENCE_BASE_URL
-      ? "frames"
-      : null;
-  return NextResponse.json({ backend });
-}
-
-async function recognizeVideoWithGemini(videoDataUrl: string): Promise<string | null> {
-  const match = videoDataUrl.match(/^data:(video\/[\w+-]+);base64,([\s\S]+)$/);
-  if (!match) throw new Error("video must be a data:video/* URL");
-  const [, mimeType, data] = match;
-  if (data.length * 0.75 > MAX_VIDEO_BYTES) throw new Error("clip too large — keep it under ~30s");
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: INSTRUCTIONS }, { inline_data: { mime_type: mimeType, data } }],
-          },
-        ],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 2000 },
-      }),
-      signal: AbortSignal.timeout(60_000),
-    }
-  );
-  if (!res.ok) throw new Error(`Gemini: ${(await res.text()).slice(0, 200)}`);
-  const d = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-  };
-  const text = d.candidates?.[0]?.content?.parts
-    ?.map((p) => p.text ?? "")
-    .join("")
-    .trim();
-  return text || null;
-}
-
-async function recognizeFramesWithMaverick(frames: string[]): Promise<string | null> {
-  const client = new OpenAI({
-    baseURL: process.env.DO_INFERENCE_BASE_URL,
-    apiKey: process.env.DO_INFERENCE_API_KEY,
-  });
-  const res = await client.chat.completions.create({
-    model: VISION_MODEL,
-    max_tokens: 120,
-    temperature: 0.2,
-    messages: [
-      {
-        role: "system",
-        content: INSTRUCTIONS + " The frames are sampled in order from a video of the signing.",
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: `${Math.min(frames.length, MAX_FRAMES)} frames, in order:` },
-          ...frames.slice(0, MAX_FRAMES).map((url) => ({
-            type: "image_url" as const,
-            image_url: { url },
-          })),
-        ],
-      },
-    ],
-  });
-  return res.choices[0]?.message?.content?.trim() || null;
-}
 
 export async function POST(req: Request) {
   const user = await verifyRequest(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const { frames, video } = (await req.json()) as { frames?: string[]; video?: string };
+  if (!process.env.GEMINI_API_KEY) {
+    return NextResponse.json({ error: "recognition not configured" }, { status: 501 });
+  }
+
+  const { video } = (await req.json()) as { video?: string };
+  const match = video?.match(/^data:(video\/[\w+-]+);base64,([\s\S]+)$/);
+  if (!match) return NextResponse.json({ error: "video required (data:video/* URL)" }, { status: 400 });
+  const [, mimeType, data] = match;
+  if (data.length * 0.75 > MAX_VIDEO_BYTES) {
+    return NextResponse.json({ error: "clip too long — keep it under about 30 seconds" }, { status: 413 });
+  }
 
   try {
-    let text: string | null = null;
-    let backend: string;
-
-    if (video && process.env.GEMINI_API_KEY) {
-      text = await recognizeVideoWithGemini(video);
-      backend = `gemini:${GEMINI_MODEL}`;
-    } else if (Array.isArray(frames) && frames.length > 0) {
-      if (!process.env.DO_INFERENCE_BASE_URL || !process.env.DO_INFERENCE_API_KEY) {
-        return NextResponse.json({ error: "no vision backend configured" }, { status: 501 });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            { parts: [{ text: INSTRUCTIONS }, { inline_data: { mime_type: mimeType, data } }] },
+          ],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 2000 },
+        }),
+        signal: AbortSignal.timeout(60_000),
       }
-      if (frames.some((f) => !f.startsWith("data:image/"))) {
-        return NextResponse.json({ error: "frames must be data:image/* URLs" }, { status: 400 });
-      }
-      text = await recognizeFramesWithMaverick(frames);
-      backend = `do:${VISION_MODEL}`;
-    } else {
-      return NextResponse.json({ error: "video or frames required" }, { status: 400 });
-    }
+    );
+    if (!res.ok) throw new Error(`recognition service error (${res.status})`);
+    const d = (await res.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    const text = d.candidates?.[0]?.content?.parts
+      ?.map((p) => p.text ?? "")
+      .join("")
+      .trim();
 
     if (!text || text.toUpperCase().includes("UNRECOGNIZED")) {
-      return NextResponse.json({ error: "could not recognize signing" }, { status: 422 });
+      return NextResponse.json(
+        { error: "couldn't read any signing — face the camera and try again" },
+        { status: 422 }
+      );
     }
-    return NextResponse.json({ text, backend });
+    return NextResponse.json({ text });
   } catch (e) {
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "vision inference failed" },
+      { error: e instanceof Error ? e.message : "recognition failed" },
       { status: 502 }
     );
   }

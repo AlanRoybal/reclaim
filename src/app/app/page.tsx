@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
+import { Spinner, EqMark, btn, card } from "@/components/ui";
 import { apiFetch, getSettings, speak } from "@/lib/client/api";
-import { useHandCapture } from "@/lib/asl/useHandCapture";
-import { segmentFrames } from "@/lib/asl/segment";
-import { loadTemplates, saveTemplate, templateCounts } from "@/lib/asl/templates";
-import { classifySmart } from "@/lib/asl/classifier";
-import { VOCAB, WORDS, LETTERS, collapseFingerspelling, type Gloss } from "@/lib/asl/vocab";
-import type { CapturedFrame } from "@/lib/asl/features";
 
-interface RecognizedSign {
-  gloss: Gloss | null;
-  confidence: number;
-}
+/**
+ * Speak: record yourself signing → Gemini translates the clip → edit the
+ * text → hear it in your voice, in your style.
+ */
+
+type Stage = "idle" | "recording" | "translating" | "review" | "generating" | "spoken";
 
 export default function AppPage() {
   return (
@@ -25,366 +22,255 @@ export default function AppPage() {
 
 function Speak() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const { ready, error, recording, handsVisible, startRecording, stopRecording } = useHandCapture(videoRef);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [tab, setTab] = useState<"speak" | "calibrate">("speak");
-  const [recogMode, setRecogMode] = useState<"local" | "ai">("local");
-  const [signs, setSigns] = useState<RecognizedSign[]>([]);
-  const [aiText, setAiText] = useState<string | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [stage, setStage] = useState<Stage>("idle");
+  const [seconds, setSeconds] = useState(0);
+  const [translation, setTranslation] = useState("");
   const [sentence, setSentence] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const frameGrabRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const framesJpegRef = useRef<string[]>([]);
-  const [aiBackend, setAiBackend] = useState<"video" | "frames" | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const videoChunksRef = useRef<Blob[]>([]);
+  const [speaking, setSpeaking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  // Camera lifecycle
   useEffect(() => {
-    apiFetch("/api/recognize")
-      .then((r) => r.json())
-      .then((d) => setAiBackend(d.backend))
-      .catch(() => setAiBackend(null));
+    let cancelled = false;
+    navigator.mediaDevices
+      .getUserMedia({ video: { width: 960, height: 720, facingMode: "user" }, audio: false })
+      .then(async (stream) => {
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        setCameraReady(true);
+      })
+      .catch(() => setCameraError("Camera unavailable. Allow camera access, then reload."));
+    return () => {
+      cancelled = true;
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
   }, []);
 
-  // Calibration state
-  const [calGloss, setCalGloss] = useState<Gloss>(VOCAB[0]);
-  const [counts, setCounts] = useState<Record<string, number>>(() =>
-    typeof window === "undefined" ? {} : templateCounts()
-  );
-  const totalTemplates = Object.values(counts).reduce((a, b) => a + b, 0);
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
 
-  async function processRecording(frames: CapturedFrame[]) {
-    const segments = segmentFrames(frames);
-    if (segments.length === 0) {
-      setStatus("No signs detected — keep your hands in frame and pause briefly between signs.");
-      return;
-    }
-    if (tab === "calibrate") {
-      // In calibrate mode the whole recording is one example of the selected sign.
-      const all = segments.flatMap((s) => s.frames);
-      saveTemplate(calGloss, all);
-      setCounts(templateCounts());
-      setStatus(`✓ Saved a template for ${calGloss}`);
-      return;
-    }
-    const templates = loadTemplates();
-    if (templates.length === 0) {
-      setStatus("No sign templates yet — go to Calibrate and record your vocabulary first.");
-      return;
-    }
-    const recognized = [];
-    let method = "dtw";
-    for (const s of segments) {
-      const c = await classifySmart(s.frames, templates);
-      method = c.method;
-      recognized.push({ gloss: c.gloss, confidence: c.confidence });
-    }
-    setSigns(recognized);
+  const startRecording = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    setError(null);
     setSentence(null);
-    setStatus(
-      `Recognized ${recognized.length} sign(s) via ${method === "model" ? "trained classifier" : "template matching"} — edit below if needed, then generate.`
-    );
-  }
+    setTranslation("");
+    chunksRef.current = [];
+    const mr = new MediaRecorder(stream, { mimeType: "video/webm" });
+    mr.ondataavailable = (e) => chunksRef.current.push(e.data);
+    mr.onstop = () => translate(new Blob(chunksRef.current, { type: "video/webm" }));
+    mr.start();
+    recorderRef.current = mr;
+    setSeconds(0);
+    timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+    setStage("recording");
+  }, []);
 
-  /** Snapshot the live video into a downscaled JPEG data URL. */
-  function grabFrame(): string | null {
-    const video = videoRef.current;
-    if (!video || video.readyState < 2) return null;
-    const scale = 384 / Math.max(video.videoWidth, 1);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(video.videoWidth * scale);
-    canvas.height = Math.round(video.videoHeight * scale);
-    canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.7);
-  }
+  const stopRecording = useCallback(() => {
+    stopTimer();
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+  }, []);
 
-  async function recognizeWithAI(payload: { video?: string; frames?: string[] }) {
-    setBusy(true);
-    setStatus(
-      payload.video
-        ? "Translating your signing with Gemini (video)…"
-        : "Translating your signing with AI vision…"
-    );
+  async function translate(blob: Blob) {
+    setStage("translating");
     try {
+      const video = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result as string);
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      });
       const res = await apiFetch("/api/recognize", {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ video }),
       });
       const d = await res.json();
       if (!res.ok) {
-        setStatus(`AI vision: ${d.error} — try again or switch to calibrated signs.`);
+        setError(d.error);
+        setStage("idle");
         return;
       }
-      setAiText(d.text);
-      setSentence(null);
-      setStatus(`Translation via ${d.backend} — edit if needed, then generate.`);
-    } finally {
-      setBusy(false);
+      setTranslation(d.text);
+      setStage("review");
+    } catch {
+      setError("Something went wrong while translating. Try again.");
+      setStage("idle");
     }
   }
 
-  function thinnedFrames(): string[] {
-    const all = framesJpegRef.current;
-    const step = Math.max(1, Math.floor(all.length / 16));
-    return all.filter((_, i) => i % step === 0).slice(0, 16);
-  }
-
-  function blobToDataUrl(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result as string);
-      r.onerror = reject;
-      r.readAsDataURL(blob);
-    });
-  }
-
-  async function generateSentence() {
-    const isAI = recogMode === "ai";
-    const raw = signs.map((s) => s.gloss).filter(Boolean) as string[];
-    if (isAI ? !aiText?.trim() : raw.length === 0) return;
-    const glosses = collapseFingerspelling(raw); // C A T → CAT
-    setBusy(true);
-    setStatus(null);
+  async function sayIt() {
+    if (!translation.trim()) return;
+    setStage("generating");
+    setError(null);
     try {
       const { mode } = getSettings();
       const res = await apiFetch("/api/style", {
         method: "POST",
-        body: JSON.stringify(isAI ? { text: aiText, mode } : { glosses, mode }),
+        body: JSON.stringify({ text: translation, mode }),
       });
       const d = await res.json();
       setSentence(d.sentence);
-      if (d.source === "fallback") setStatus(`Using simple stitcher (${d.note ?? "LLM unavailable"})`);
-      const how = await speak(d.sentence);
-      if (how === "web-speech") setStatus((s) => (s ? s + " · " : "") + "Spoken with generic voice (no clone yet)");
+      setStage("spoken");
+      setSpeaking(true);
+      await speak(d.sentence);
     } finally {
-      setBusy(false);
+      setSpeaking(false);
+      setStage((s) => (s === "generating" ? "review" : s));
     }
   }
 
+  async function sayAgain() {
+    if (!sentence) return;
+    setSpeaking(true);
+    try {
+      await speak(sentence);
+    } finally {
+      setSpeaking(false);
+    }
+  }
+
+  const busy = stage === "translating" || stage === "generating";
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
-      <div className="mb-4 flex gap-2">
-        <button
-          onClick={() => setTab("speak")}
-          className={`rounded px-4 py-1.5 text-sm font-medium ${tab === "speak" ? "bg-teal-500 text-black" : "border border-zinc-700"}`}
-        >
-          Speak
-        </button>
-        <button
-          onClick={() => setTab("calibrate")}
-          className={`rounded px-4 py-1.5 text-sm font-medium ${tab === "calibrate" ? "bg-teal-500 text-black" : "border border-zinc-700"}`}
-        >
-          Calibrate signs ({totalTemplates})
-        </button>
-      </div>
+      <header className="mb-5">
+        <h1 className="text-2xl font-bold tracking-tight">Speak</h1>
+        <p className="mt-1 text-sm text-stone-400">
+          Record yourself signing, check the words, and say them in your voice.
+        </p>
+      </header>
 
-      <div className="relative overflow-hidden rounded-lg border border-zinc-800 bg-black">
-        {/* Mirrored preview so signing feels natural */}
+      {/* Camera */}
+      <div className="relative overflow-hidden rounded-2xl border border-stone-800 bg-black shadow-2xl shadow-black/40">
         <video ref={videoRef} playsInline muted className="aspect-[4/3] w-full -scale-x-100 object-cover" />
-        <div className="absolute left-3 top-3 flex items-center gap-2 text-xs">
-          <span className={`rounded px-2 py-0.5 ${handsVisible ? "bg-teal-500/90 text-black" : "bg-zinc-800/90 text-zinc-300"}`}>
-            {handsVisible ? "Hands detected" : "No hands in frame"}
-          </span>
-          {recording && <span className="rounded bg-red-500/90 px-2 py-0.5 text-white">● REC</span>}
-        </div>
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/80 p-6 text-center text-sm text-red-300">
-            {error} — allow camera access and reload.
+
+        {stage === "recording" && (
+          <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-rose-600/90 px-3 py-1 text-xs font-semibold text-white">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
+            {`0:${String(seconds).padStart(2, "0")}`}
+          </div>
+        )}
+
+        {stage === "translating" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-stone-950/70 backdrop-blur-sm">
+            <Spinner className="h-8 w-8 text-amber-500" />
+            <p className="text-sm font-medium text-stone-200">Reading your signs…</p>
+          </div>
+        )}
+
+        {cameraError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-stone-950/90 p-6 text-center text-sm text-rose-300">
+            {cameraError}
+          </div>
+        )}
+
+        {!cameraReady && !cameraError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-stone-950/80">
+            <Spinner className="h-6 w-6 text-stone-400" />
           </div>
         )}
       </div>
 
-      {tab === "calibrate" && (
-        <div className="mt-4 rounded-lg border border-zinc-800 p-4">
-          <p className="text-sm text-zinc-300">
-            Teach Reclaim <em>your</em> signing. Pick a sign, tap record, sign it once, tap stop. With 3+ examples
-            per sign a neural classifier trains on-device automatically; fewer falls back to template matching.
-            Everything stays local to this device.
-          </p>
-          {(
-            [
-              ["Words", WORDS],
-              ["Fingerspelling", LETTERS],
-            ] as const
-          ).map(([title, list]) => (
-            <div key={title} className="mt-3">
-              <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {list.map((g) => (
-                  <button
-                    key={g}
-                    onClick={() => setCalGloss(g)}
-                    className={`rounded px-2 py-1 text-xs ${
-                      calGloss === g
-                        ? "bg-teal-500 text-black"
-                        : (counts[g] ?? 0) > 0
-                          ? "border border-teal-700 text-teal-300"
-                          : "border border-zinc-700 text-zinc-300"
-                    }`}
-                  >
-                    {g} {(counts[g] ?? 0) > 0 ? `✓${counts[g]}` : ""}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-4 flex items-center gap-3">
+      {/* Record control */}
+      <div className="mt-6 flex flex-col items-center gap-2">
         <button
-          disabled={!ready}
-          onClick={() => {
-            if (recording) {
-              if (frameGrabRef.current) {
-                clearInterval(frameGrabRef.current);
-                frameGrabRef.current = null;
-              }
-              const frames = stopRecording();
-              if (tab === "speak" && recogMode === "ai") {
-                if (mediaRecorderRef.current) {
-                  // Video backend: recognition fires from MediaRecorder.onstop.
-                  mediaRecorderRef.current.stop();
-                  mediaRecorderRef.current = null;
-                } else {
-                  recognizeWithAI({ frames: thinnedFrames() });
-                }
-              } else {
-                processRecording(frames);
-              }
-            } else {
-              setSigns([]);
-              setAiText(null);
-              setSentence(null);
-              setStatus(null);
-              framesJpegRef.current = [];
-              if (tab === "speak" && recogMode === "ai") {
-                const stream = videoRef.current?.srcObject as MediaStream | null;
-                if (aiBackend === "video" && stream && typeof MediaRecorder !== "undefined") {
-                  const mr = new MediaRecorder(stream, { mimeType: "video/webm" });
-                  videoChunksRef.current = [];
-                  mr.ondataavailable = (e) => videoChunksRef.current.push(e.data);
-                  mr.onstop = async () => {
-                    const video = await blobToDataUrl(
-                      new Blob(videoChunksRef.current, { type: "video/webm" })
-                    );
-                    recognizeWithAI({ video });
-                  };
-                  mr.start();
-                  mediaRecorderRef.current = mr;
-                } else {
-                  frameGrabRef.current = setInterval(() => {
-                    const f = grabFrame();
-                    if (f) framesJpegRef.current.push(f);
-                  }, 250);
-                }
-              }
-              startRecording();
-            }
-          }}
-          className={`rounded-full px-6 py-3 font-semibold disabled:opacity-40 ${
-            recording ? "bg-red-500 text-white" : "bg-teal-500 text-black hover:bg-teal-400"
+          disabled={!cameraReady || busy}
+          onClick={stage === "recording" ? stopRecording : startRecording}
+          aria-label={stage === "recording" ? "Stop recording" : "Start recording"}
+          className={`flex h-16 w-16 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-4 ${
+            stage === "recording"
+              ? "pulse-ring bg-rose-600 focus-visible:outline-rose-500"
+              : "bg-amber-500 hover:bg-amber-400 focus-visible:outline-amber-500"
           }`}
         >
-          {recording
-            ? "■ Stop"
-            : tab === "calibrate"
-              ? `● Record "${calGloss}"`
-              : "● Record phrase"}
+          {stage === "recording" ? (
+            <span className="h-5 w-5 rounded-sm bg-white" />
+          ) : (
+            <span className="h-6 w-6 rounded-full border-4 border-stone-950" />
+          )}
         </button>
-        {tab === "speak" && (
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs">
-              {(
-                [
-                  ["local", "My signs"],
-                  ["ai", "AI vision (beta)"],
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setRecogMode(value)}
-                  className={`rounded px-2 py-1 ${recogMode === value ? "bg-zinc-100 text-black" : "border border-zinc-700 text-zinc-300"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-zinc-500">
-              {recogMode === "local"
-                ? "Sign your phrase, pausing briefly between signs, then stop."
-                : aiBackend === "video"
-                  ? "Sign naturally — the clip is translated by Gemini (video). Keep clips under ~30s. Always check the text."
-                  : "Sign naturally — the clip's frames are translated by a vision model on DigitalOcean. Unproven accuracy; always check the text."}
-            </p>
-          </div>
-        )}
+        <p className="text-xs text-stone-500">
+          {stage === "recording"
+            ? "Tap to finish"
+            : "Tap to record • quick phrases: hold up 1–5 fingers"}
+        </p>
       </div>
 
-      {status && <p className="mt-3 text-sm text-zinc-300">{status}</p>}
+      {error && (
+        <p className="rise-in mt-4 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+          {error}
+        </p>
+      )}
 
-      {tab === "speak" && recogMode === "ai" && aiText !== null && (
-        <div className="mt-5 rounded-lg border border-zinc-800 p-4">
-          <h3 className="text-sm font-semibold text-zinc-300">AI translation (edit before speaking)</h3>
+      {/* Review + speak */}
+      {(stage === "review" || stage === "generating" || stage === "spoken") && (
+        <section className={`rise-in mt-6 ${card}`}>
+          <label htmlFor="translation" className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+            What we read — fix anything before speaking
+          </label>
           <textarea
-            value={aiText}
-            onChange={(e) => setAiText(e.target.value)}
+            id="translation"
+            value={translation}
+            onChange={(e) => setTranslation(e.target.value)}
             rows={2}
-            className="mt-2 w-full rounded border border-zinc-700 bg-zinc-900 p-2 text-sm"
+            disabled={busy}
+            className="mt-2 w-full resize-none rounded-lg border border-stone-700 bg-stone-950 p-3 text-base transition focus:border-amber-600 focus:outline-none disabled:opacity-60"
           />
-          <button
-            onClick={generateSentence}
-            disabled={busy || !aiText.trim()}
-            className="mt-3 rounded bg-teal-500 px-5 py-2 font-medium text-black hover:bg-teal-400 disabled:opacity-40"
-          >
-            {busy ? "Generating…" : "Say it →"}
-          </button>
-        </div>
-      )}
-
-      {tab === "speak" && recogMode === "local" && signs.length > 0 && (
-        <div className="mt-5 rounded-lg border border-zinc-800 p-4">
-          <h3 className="text-sm font-semibold text-zinc-300">Recognized signs (tap to fix)</h3>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {signs.map((s, i) => (
-              <select
-                key={i}
-                value={s.gloss ?? ""}
-                onChange={(e) =>
-                  setSigns((prev) => prev.map((p, j) => (j === i ? { ...p, gloss: e.target.value as Gloss } : p)))
-                }
-                className={`rounded border bg-zinc-900 px-2 py-1 text-sm ${
-                  s.confidence >= 0.65 ? "border-teal-600" : "border-yellow-600"
-                }`}
-                title={`confidence ${(s.confidence * 100).toFixed(0)}%`}
-              >
-                <option value="">(remove)</option>
-                {VOCAB.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-            ))}
+          <div className="mt-3 flex items-center gap-3">
+            <button onClick={sayIt} disabled={busy || !translation.trim()} className={btn.primary}>
+              {stage === "generating" ? (
+                <>
+                  <Spinner /> Making it yours…
+                </>
+              ) : (
+                "Say it"
+              )}
+            </button>
+            {stage !== "generating" && (
+              <button onClick={startRecording} disabled={busy} className={btn.secondary}>
+                Record again
+              </button>
+            )}
           </div>
-          <button
-            onClick={generateSentence}
-            disabled={busy || signs.every((s) => !s.gloss)}
-            className="mt-4 rounded bg-teal-500 px-5 py-2 font-medium text-black hover:bg-teal-400 disabled:opacity-40"
-          >
-            {busy ? "Generating…" : "Say it →"}
-          </button>
-        </div>
+        </section>
       )}
 
-      {sentence && (
-        <div className="mt-5 rounded-lg border border-teal-800 bg-teal-950/30 p-5">
-          <p className="text-xl">“{sentence}”</p>
-          <button onClick={() => speak(sentence)} className="mt-3 rounded border border-teal-700 px-3 py-1 text-sm text-teal-300 hover:bg-teal-900/40">
-            🔊 Say again
+      {/* Spoken sentence — the voice moment */}
+      {sentence && stage === "spoken" && (
+        <section className="rise-in mt-4 rounded-xl border border-amber-900/50 bg-gradient-to-b from-amber-950/40 to-stone-900/40 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-xl leading-snug">“{sentence}”</p>
+            <EqMark live={speaking} className="mt-1 h-5 shrink-0" />
+          </div>
+          <button onClick={sayAgain} disabled={speaking} className={`${btn.secondary} mt-4`}>
+            {speaking ? (
+              <>
+                <Spinner /> Speaking…
+              </>
+            ) : (
+              "Say again"
+            )}
           </button>
-        </div>
+        </section>
       )}
     </main>
   );
