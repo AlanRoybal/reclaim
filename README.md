@@ -59,9 +59,15 @@ Server AWS credentials come from the default AWS CLI chain.
 3. **Speak**: record a phrase (pause briefly between signs) → fix any glosses → **Say it**.
 4. `/settings`: toggle **Generic AI ↔ Personal Me**, voice on/off, delete-my-data.
 
-## Phase 2 roadmap
+## Phase 2 — implemented
 
-1. **Per-user LoRA fine-tune** — fine-tune Qwen2.5-1.5B-Instruct with TRL `SFTTrainer` on a DO GPU Droplet over the user's corpus, export Safetensors, register via DO **BYOM** ($5/mo weight storage), serve on dedicated inference (H100 $4.41/hr · MI300X $2.59/hr). BYOM supports Qwen2/Qwen3ForCausalLM — our base qualifies. Few-shot prompting alone demonstrably under-captures informal personal style (19–65% authorship match vs 95–97% formal), so fine-tuning is the quality unlock.
-2. **Self-hosted voice** — F5-TTS (MIT-licensed, 2–3 GB VRAM) on a DO GPU Droplet replaces ElevenLabs; keeps voice biometrics fully first-party.
-3. **Vocabulary growth** — replace DTW templates with a trained sequence classifier (LSTM/transformer over landmark sequences, the MP-GestLSTM recipe: 94%+ on 20 classes) and add fingerspelling.
-4. **Style embeddings** — TinyStyler-style authorship embeddings for zero-training per-user style as a middle tier between few-shot and LoRA.
+1. **Per-user LoRA fine-tune** (`training/`) — `prep_data.py` reverse-translates the user's real messages into gloss→message SFT pairs (teacher: Llama 3.3 70B), `train_model.py` LoRA-tunes Qwen2.5-1.5B-Instruct with TRL `SFTTrainer` and exports merged Safetensors for DO **BYOM**, `provision.sh` spins the GPU Droplet. Drop a `users/{sub}/model.json` pointing at the dedicated-inference deployment and `/api/style` routes that user's personal mode to their own model (`source: personal-finetuned`). See `training/README.md` for the runbook + costs.
+2. **Self-hosted voice** (`services/f5-tts/`) — FastAPI service wrapping F5-TTS (MIT, 2–3 GB VRAM) zero-shot cloning; `deploy.sh` deploys to a DO GPU Droplet. Voice ladder in `/api/speak`: **F5-TTS → ElevenLabs clone → ElevenLabs premade → Web Speech**, each tier degrading gracefully. Set `F5_TTS_URL` + `F5_TTS_API_KEY` to activate.
+3. **Vocabulary growth** — 24 word signs **+ A–Z fingerspelling** (consecutive letters collapse into words: C A T → CAT). A TF.js MLP classifier trains on-device once every calibrated sign has 3+ examples; below that, DTW template matching.
+4. **Style profile tier** (`/api/style-profile`) — an LLM-distilled style card (slang, catchphrases, punctuation habits) cached in S3 and injected into personal prompts; generated automatically after the texts upload. Middle tier between raw few-shot and the LoRA fine-tune.
+
+### Further work
+
+- Batch multiple users' LoRA adapters onto one dedicated deployment to amortize GPU cost
+- TinyStyler-style authorship embeddings as a zero-training personalization tier
+- Continuous-sign segmentation research (co-articulation) to relax the pause requirement
