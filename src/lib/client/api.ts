@@ -30,11 +30,6 @@ export function setSettings(s: { mode?: SpeakMode; voiceEnabled?: boolean }) {
   if (s.voiceEnabled !== undefined) localStorage.setItem("reclaim.voice", s.voiceEnabled ? "on" : "off");
 }
 
-/** Fire-and-forget: feed a spoken sentence into the user's knowledge graph. */
-export function recordMemory(text: string) {
-  apiFetch("/api/graph", { method: "POST", body: JSON.stringify({ text }) }).catch(() => {});
-}
-
 /** Speak text: try the personal cloned voice, fall back to Web Speech. */
 export async function speak(text: string): Promise<"cloned" | "web-speech" | "silent"> {
   const { voiceEnabled } = getSettings();

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { Spinner, EqMark, btn, card } from "@/components/ui";
-import { apiFetch, getSettings, recordMemory, speak } from "@/lib/client/api";
+import { apiFetch, getSettings, speak } from "@/lib/client/api";
 
 /**
  * Speak: record yourself signing → Gemini translates the clip → edit the
@@ -130,7 +130,6 @@ function Speak() {
       const d = await res.json();
       setSentence(d.sentence);
       setStage("spoken");
-      recordMemory(d.sentence); // grow the Memory graph — never blocks speech
       setSpeaking(true);
       await speak(d.sentence);
     } finally {

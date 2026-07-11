@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { Spinner, EqMark, btn, card } from "@/components/ui";
-import { apiFetch, recordMemory, speak } from "@/lib/client/api";
+import { apiFetch, speak } from "@/lib/client/api";
 
 /**
  * Conversation: the other person talks, Reclaim listens and drafts replies in
@@ -87,7 +87,6 @@ function Converse() {
     setTurns((t) => [...t, { who: "me", text }]);
     setReplies([]);
     setCustom("");
-    recordMemory(text); // grow the Memory graph — never blocks speech
     queueMicrotask(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }));
     try {
       await speak(text);
