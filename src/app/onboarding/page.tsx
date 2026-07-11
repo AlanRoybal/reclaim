@@ -52,7 +52,17 @@ function Onboarding() {
       body: JSON.stringify({ kind: "texts", content: texts }),
     });
     const d = await res.json();
-    setTextStatus(res.ok ? `✓ Saved ${d.messageCount} messages (URLs/emails/phones redacted)` : `Error: ${d.error}`);
+    if (!res.ok) {
+      setTextStatus(`Error: ${d.error}`);
+      return;
+    }
+    setTextStatus(`✓ Saved ${d.messageCount} messages (PII redacted) — analyzing your style…`);
+    const prof = await apiFetch("/api/style-profile", { method: "POST" });
+    setTextStatus(
+      prof.ok
+        ? `✓ Saved ${d.messageCount} messages and built your style profile`
+        : `✓ Saved ${d.messageCount} messages (style profile skipped — will use raw examples)`
+    );
   }
 
   async function uploadBlob(blob: Blob) {
