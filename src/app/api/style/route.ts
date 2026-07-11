@@ -6,13 +6,21 @@ import { getObjectText, userPrefix } from "@/lib/server/s3";
 /**
  * Gloss sequence → fluent sentence.
  *
- * mode "personal": few-shot style-conditioning — system prompt built from the
- * user's uploaded message corpus, served by DigitalOcean Gradient dedicated
- * inference (OpenAI-compatible endpoint).
- * mode "generic": plain assistant system prompt, same endpoint.
- * If DO inference is not configured, falls back to a rule-based stitcher so
- * the demo always works end-to-end.
+ * mode "personal", in escalating quality tiers:
+ *   1. Fine-tuned: users/{sub}/model.json points at the user's own LoRA-tuned
+ *      Qwen served on DO dedicated inference (see training/) — used verbatim.
+ *   2. Few-shot: style profile + example messages from the user's corpus in
+ *      the system prompt, served by shared DO Gradient inference.
+ * mode "generic": plain assistant system prompt, shared endpoint.
+ * If no inference is configured, falls back to a rule-based stitcher so the
+ * demo always works end-to-end.
  */
+
+interface UserModel {
+  baseURL: string;
+  apiKey: string;
+  model: string;
+}
 
 const GLOSS_WORDS: Record<string, string> = {
   ME: "I",
@@ -47,9 +55,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "glosses required" }, { status: 400 });
   }
 
-  const baseURL = process.env.DO_INFERENCE_BASE_URL;
-  const apiKey = process.env.DO_INFERENCE_API_KEY;
-  const model = process.env.DO_INFERENCE_MODEL;
+  let baseURL = process.env.DO_INFERENCE_BASE_URL;
+  let apiKey = process.env.DO_INFERENCE_API_KEY;
+  let model = process.env.DO_INFERENCE_MODEL;
+  let usingFineTune = false;
+
+  if (mode === "personal") {
+    // Tier 1: the user's own fine-tuned model on dedicated inference.
+    const modelText = await getObjectText(`${userPrefix(user.sub)}model.json`);
+    if (modelText) {
+      const m = JSON.parse(modelText) as UserModel;
+      baseURL = m.baseURL;
+      apiKey = m.apiKey;
+      model = m.model;
+      usingFineTune = true;
+    }
+  }
 
   if (!baseURL || !apiKey || !model) {
     return NextResponse.json({
@@ -64,15 +85,30 @@ export async function POST(req: Request) {
     "Glosses are uppercase sign labels in signed order (ASL grammar, not English). " +
     "Reply with ONLY the sentence — no quotes, no explanation.";
 
-  if (mode === "personal") {
-    const corpusText = await getObjectText(`${userPrefix(user.sub)}texts/corpus.json`);
+  if (usingFineTune) {
+    // Must match the system prompt the model was trained with (training/prep_data.py).
+    system =
+      "You translate ASL gloss sequences into a single fluent, natural English " +
+      "sentence written exactly the way this user texts. Reply with ONLY the sentence.";
+  } else if (mode === "personal") {
+    // Tier 2: style profile (if generated) + few-shot examples from the corpus.
+    const [profileText, corpusText] = await Promise.all([
+      getObjectText(`${userPrefix(user.sub)}texts/profile.json`),
+      getObjectText(`${userPrefix(user.sub)}texts/corpus.json`),
+    ]);
+    if (profileText) {
+      const { profile } = JSON.parse(profileText) as { profile: string };
+      system += `\n\nWrite the sentence the way THIS person texts. Their style profile:\n${profile}`;
+    }
     if (corpusText) {
       const { lines } = JSON.parse(corpusText) as { lines: string[] };
-      const examples = sampleLines(lines, 20);
+      const examples = sampleLines(lines, profileText ? 10 : 20);
       if (examples.length > 0) {
         system +=
-          "\n\nWrite the sentence the way THIS person texts. Match their slang, phrasing, " +
-          "catchphrases, capitalization, and punctuation. Examples of how they write:\n" +
+          (profileText
+            ? "\n\nExamples of how they write:\n"
+            : "\n\nWrite the sentence the way THIS person texts. Match their slang, phrasing, " +
+              "catchphrases, capitalization, and punctuation. Examples of how they write:\n") +
           examples.map((e) => `- ${e}`).join("\n");
       }
     }
@@ -91,7 +127,7 @@ export async function POST(req: Request) {
     });
     const sentence = res.choices[0]?.message?.content?.trim();
     if (!sentence) throw new Error("empty completion");
-    return NextResponse.json({ sentence, source: mode });
+    return NextResponse.json({ sentence, source: usingFineTune ? "personal-finetuned" : mode });
   } catch (e) {
     // Degrade gracefully: never block the flow on the LLM.
     return NextResponse.json({
