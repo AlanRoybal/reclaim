@@ -1,8 +1,10 @@
 /**
- * Fixed sign vocabulary for the MVP. Isolated-sign recognition over a small,
- * reliable vocabulary — NOT continuous ASL translation.
+ * Sign vocabulary: isolated word signs + A–Z fingerspelling.
+ * Isolated-sign recognition over a fixed, calibrated vocabulary — NOT
+ * continuous ASL translation. Consecutive fingerspelled letters are collapsed
+ * into a word before sentence generation (C A T → CAT).
  */
-export const VOCAB = [
+export const WORDS = [
   "ME",
   "YOU",
   "WANT",
@@ -29,4 +31,33 @@ export const VOCAB = [
   "MORE",
 ] as const;
 
-export type Gloss = (typeof VOCAB)[number];
+export const LETTERS = [
+  "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+] as const;
+
+export const VOCAB: readonly string[] = [...WORDS, ...LETTERS];
+
+export type Gloss = string;
+
+/** Collapse runs of fingerspelled letters into words: ["GO","C","A","T"] → ["GO","CAT"]. */
+export function collapseFingerspelling(glosses: Gloss[]): Gloss[] {
+  const letterSet = new Set<string>(LETTERS);
+  const out: Gloss[] = [];
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length > 0) {
+      out.push(run.join(""));
+      run = [];
+    }
+  };
+  for (const g of glosses) {
+    if (letterSet.has(g)) run.push(g);
+    else {
+      flush();
+      out.push(g);
+    }
+  }
+  flush();
+  return out;
+}

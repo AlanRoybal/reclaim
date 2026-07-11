@@ -5,8 +5,9 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { apiFetch, getSettings, speak } from "@/lib/client/api";
 import { useHandCapture } from "@/lib/asl/useHandCapture";
 import { segmentFrames } from "@/lib/asl/segment";
-import { classifySegment, loadTemplates, saveTemplate, templateCounts } from "@/lib/asl/templates";
-import { VOCAB, type Gloss } from "@/lib/asl/vocab";
+import { loadTemplates, saveTemplate, templateCounts } from "@/lib/asl/templates";
+import { classifySmart } from "@/lib/asl/classifier";
+import { VOCAB, WORDS, LETTERS, collapseFingerspelling, type Gloss } from "@/lib/asl/vocab";
 import type { CapturedFrame } from "@/lib/asl/features";
 
 interface RecognizedSign {
@@ -39,7 +40,7 @@ function Speak() {
   );
   const totalTemplates = Object.values(counts).reduce((a, b) => a + b, 0);
 
-  function processRecording(frames: CapturedFrame[]) {
+  async function processRecording(frames: CapturedFrame[]) {
     const segments = segmentFrames(frames);
     if (segments.length === 0) {
       setStatus("No signs detected — keep your hands in frame and pause briefly between signs.");
@@ -58,18 +59,24 @@ function Speak() {
       setStatus("No sign templates yet — go to Calibrate and record your vocabulary first.");
       return;
     }
-    const recognized = segments.map((s) => {
-      const c = classifySegment(s.frames, templates);
-      return { gloss: c.gloss, confidence: c.confidence };
-    });
+    const recognized = [];
+    let method = "dtw";
+    for (const s of segments) {
+      const c = await classifySmart(s.frames, templates);
+      method = c.method;
+      recognized.push({ gloss: c.gloss, confidence: c.confidence });
+    }
     setSigns(recognized);
     setSentence(null);
-    setStatus(`Recognized ${recognized.length} sign(s) — edit below if needed, then generate.`);
+    setStatus(
+      `Recognized ${recognized.length} sign(s) via ${method === "model" ? "trained classifier" : "template matching"} — edit below if needed, then generate.`
+    );
   }
 
   async function generateSentence() {
-    const glosses = signs.map((s) => s.gloss).filter(Boolean) as string[];
-    if (glosses.length === 0) return;
+    const raw = signs.map((s) => s.gloss).filter(Boolean) as string[];
+    if (raw.length === 0) return;
+    const glosses = collapseFingerspelling(raw); // C A T → CAT
     setBusy(true);
     setStatus(null);
     try {
@@ -124,26 +131,37 @@ function Speak() {
       {tab === "calibrate" && (
         <div className="mt-4 rounded-lg border border-zinc-800 p-4">
           <p className="text-sm text-zinc-300">
-            Teach Reclaim <em>your</em> signing. Pick a word, tap record, sign it once, tap stop. 1–2 examples per
-            word. The classifier matches your future signs to these templates — all stored locally on this device.
+            Teach Reclaim <em>your</em> signing. Pick a sign, tap record, sign it once, tap stop. With 3+ examples
+            per sign a neural classifier trains on-device automatically; fewer falls back to template matching.
+            Everything stays local to this device.
           </p>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {VOCAB.map((g) => (
-              <button
-                key={g}
-                onClick={() => setCalGloss(g)}
-                className={`rounded px-2 py-1 text-xs ${
-                  calGloss === g
-                    ? "bg-teal-500 text-black"
-                    : (counts[g] ?? 0) > 0
-                      ? "border border-teal-700 text-teal-300"
-                      : "border border-zinc-700 text-zinc-300"
-                }`}
-              >
-                {g} {(counts[g] ?? 0) > 0 ? `✓${counts[g]}` : ""}
-              </button>
-            ))}
-          </div>
+          {(
+            [
+              ["Words", WORDS],
+              ["Fingerspelling", LETTERS],
+            ] as const
+          ).map(([title, list]) => (
+            <div key={title} className="mt-3">
+              <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h4>
+              <div className="flex flex-wrap gap-1.5">
+                {list.map((g) => (
+                  <button
+                    key={g}
+                    onClick={() => setCalGloss(g)}
+                    className={`rounded px-2 py-1 text-xs ${
+                      calGloss === g
+                        ? "bg-teal-500 text-black"
+                        : (counts[g] ?? 0) > 0
+                          ? "border border-teal-700 text-teal-300"
+                          : "border border-zinc-700 text-zinc-300"
+                    }`}
+                  >
+                    {g} {(counts[g] ?? 0) > 0 ? `✓${counts[g]}` : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
