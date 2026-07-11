@@ -58,6 +58,10 @@ const FEATURES = [
     title: "Consent-first biometrics",
     body: "Voiceprints are biometric data (GDPR Art. 9, BIPA). Cloning is hard-gated on an explicit stored consent record, PII is redacted from your corpus, and one tap erases everything — including the clones at the provider.",
   },
+  {
+    title: "A ladder to your own model",
+    body: "Style runs in three tiers: retrieved examples, a distilled style card, and — when prompting isn't enough — a per-user LoRA fine-tune of Qwen2.5 trained on your messages and served on DigitalOcean dedicated inference as a model that's yours alone. The training pipeline ships in-repo, ready to switch on.",
+  },
 ];
 
 const STACK = [
@@ -66,6 +70,7 @@ const STACK = [
   ["Embeddings", "GTE-Large on DO serverless — semantic few-shot retrieval"],
   ["Voice", "ElevenLabs instant voice cloning + Flash v2.5 TTS"],
   ["TTS fallback", "Qwen3 TTS on DO Gradient, then device speech"],
+  ["Fine-tuning", "Per-user LoRA (Qwen2.5 + TRL) on DO GPU → BYOM → dedicated inference"],
   ["Cache", "DO Managed Valkey — audio keyed on (voice, sentence)"],
   ["Storage", "DO Spaces, private per-user prefix, PII-redacted"],
   ["Hosting", "DO App Platform, deployed from GitHub"],
