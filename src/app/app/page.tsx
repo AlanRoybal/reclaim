@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { apiFetch, getSettings, speak } from "@/lib/client/api";
 import { useHandCapture } from "@/lib/asl/useHandCapture";
@@ -36,6 +36,16 @@ function Speak() {
   const [busy, setBusy] = useState(false);
   const frameGrabRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const framesJpegRef = useRef<string[]>([]);
+  const [aiBackend, setAiBackend] = useState<"video" | "frames" | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    apiFetch("/api/recognize")
+      .then((r) => r.json())
+      .then((d) => setAiBackend(d.backend))
+      .catch(() => setAiBackend(null));
+  }, []);
 
   // Calibration state
   const [calGloss, setCalGloss] = useState<Gloss>(VOCAB[0]);
@@ -89,21 +99,17 @@ function Speak() {
     return canvas.toDataURL("image/jpeg", 0.7);
   }
 
-  async function recognizeWithAI() {
-    // Thin captured frames to 16, evenly spaced across the clip.
-    const all = framesJpegRef.current;
-    if (all.length === 0) {
-      setStatus("No frames captured — try a slightly longer recording.");
-      return;
-    }
-    const step = Math.max(1, Math.floor(all.length / 16));
-    const frames = all.filter((_, i) => i % step === 0).slice(0, 16);
+  async function recognizeWithAI(payload: { video?: string; frames?: string[] }) {
     setBusy(true);
-    setStatus("Translating your signing with AI vision…");
+    setStatus(
+      payload.video
+        ? "Translating your signing with Gemini (video)…"
+        : "Translating your signing with AI vision…"
+    );
     try {
       const res = await apiFetch("/api/recognize", {
         method: "POST",
-        body: JSON.stringify({ frames }),
+        body: JSON.stringify(payload),
       });
       const d = await res.json();
       if (!res.ok) {
@@ -112,10 +118,25 @@ function Speak() {
       }
       setAiText(d.text);
       setSentence(null);
-      setStatus("AI translation below — edit if needed, then generate.");
+      setStatus(`Translation via ${d.backend} — edit if needed, then generate.`);
     } finally {
       setBusy(false);
     }
+  }
+
+  function thinnedFrames(): string[] {
+    const all = framesJpegRef.current;
+    const step = Math.max(1, Math.floor(all.length / 16));
+    return all.filter((_, i) => i % step === 0).slice(0, 16);
+  }
+
+  function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result as string);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
   }
 
   async function generateSentence() {
@@ -221,8 +242,17 @@ function Speak() {
                 frameGrabRef.current = null;
               }
               const frames = stopRecording();
-              if (tab === "speak" && recogMode === "ai") recognizeWithAI();
-              else processRecording(frames);
+              if (tab === "speak" && recogMode === "ai") {
+                if (mediaRecorderRef.current) {
+                  // Video backend: recognition fires from MediaRecorder.onstop.
+                  mediaRecorderRef.current.stop();
+                  mediaRecorderRef.current = null;
+                } else {
+                  recognizeWithAI({ frames: thinnedFrames() });
+                }
+              } else {
+                processRecording(frames);
+              }
             } else {
               setSigns([]);
               setAiText(null);
@@ -230,10 +260,25 @@ function Speak() {
               setStatus(null);
               framesJpegRef.current = [];
               if (tab === "speak" && recogMode === "ai") {
-                frameGrabRef.current = setInterval(() => {
-                  const f = grabFrame();
-                  if (f) framesJpegRef.current.push(f);
-                }, 250);
+                const stream = videoRef.current?.srcObject as MediaStream | null;
+                if (aiBackend === "video" && stream && typeof MediaRecorder !== "undefined") {
+                  const mr = new MediaRecorder(stream, { mimeType: "video/webm" });
+                  videoChunksRef.current = [];
+                  mr.ondataavailable = (e) => videoChunksRef.current.push(e.data);
+                  mr.onstop = async () => {
+                    const video = await blobToDataUrl(
+                      new Blob(videoChunksRef.current, { type: "video/webm" })
+                    );
+                    recognizeWithAI({ video });
+                  };
+                  mr.start();
+                  mediaRecorderRef.current = mr;
+                } else {
+                  frameGrabRef.current = setInterval(() => {
+                    const f = grabFrame();
+                    if (f) framesJpegRef.current.push(f);
+                  }, 250);
+                }
               }
               startRecording();
             }
@@ -269,7 +314,9 @@ function Speak() {
             <p className="text-xs text-zinc-500">
               {recogMode === "local"
                 ? "Sign your phrase, pausing briefly between signs, then stop."
-                : "Sign naturally — the clip's frames are translated by a vision model on DigitalOcean. Unproven accuracy; always check the text."}
+                : aiBackend === "video"
+                  ? "Sign naturally — the clip is translated by Gemini (video). Keep clips under ~30s. Always check the text."
+                  : "Sign naturally — the clip's frames are translated by a vision model on DigitalOcean. Unproven accuracy; always check the text."}
             </p>
           </div>
         )}
