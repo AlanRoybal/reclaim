@@ -209,9 +209,7 @@ function Speak() {
           )}
         </button>
         <p className="text-xs text-stone-500">
-          {stage === "recording"
-            ? "Tap to finish"
-            : "Tap to record • quick phrases: hold up 1–5 fingers"}
+          {stage === "recording" ? "Tap to finish" : "Tap to record"}
         </p>
       </div>
 
