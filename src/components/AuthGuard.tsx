@@ -6,6 +6,7 @@ import { EqMark } from "./ui";
 
 const LINKS = [
   { href: "/app", label: "Speak" },
+  { href: "/converse", label: "Conversation" },
   { href: "/onboarding", label: "My voice" },
   { href: "/settings", label: "Settings" },
 ];
