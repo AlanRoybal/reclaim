@@ -59,8 +59,10 @@ function Memory() {
   const [selected, setSelected] = useState<string | null>(null);
   const rafRef = useRef(0);
 
-  const W = 640;
-  const H = 480;
+  // Canvas grows with the graph so a well-fed map stays legible.
+  const n = graph?.nodes.length ?? 0;
+  const W = n > 40 ? 900 : 640;
+  const H = n > 40 ? 700 : 480;
 
   useEffect(() => {
     apiFetch("/api/graph")
@@ -101,7 +103,7 @@ function Memory() {
           let dx = a.x - b.x;
           let dy = a.y - b.y;
           const d2 = Math.max(dx * dx + dy * dy, 100);
-          const f = 2600 / d2;
+          const f = (nodes.length > 40 ? 4200 : 2600) / d2;
           const d = Math.sqrt(d2);
           dx /= d;
           dy /= d;
