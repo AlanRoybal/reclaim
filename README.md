@@ -19,7 +19,9 @@ Deliberate scoping: **continuous ASL translation is unsolved** — Reclaim does 
 ## Stack
 
 - **Frontend** — Next.js 16 (App Router) + TypeScript + Tailwind. Pages: `/login`, `/onboarding`, `/app` (record → glosses → sentence → speak), `/settings`.
-- **ASL** — `@mediapipe/tasks-vision` HandLandmarker fully in-browser; per-user sign templates recorded in Calibrate mode (localStorage); DTW classifier in `src/lib/asl/`.
+- **ASL** — two recognition modes:
+  - *My signs* (default): `@mediapipe/tasks-vision` HandLandmarker fully in-browser; per-user calibrated templates, TF.js/DTW classifier in `src/lib/asl/`. Reliable, private, fixed vocabulary.
+  - *AI vision (beta)*: frames sampled from the clip are translated by a multimodal model (Llama 4 Maverick) on DO Gradient serverless (`/api/recognize`). No vocabulary limit or calibration; accuracy on fluent ASL unproven — output is always editable before speaking.
 - **Style LLM** — DigitalOcean Gradient dedicated inference, OpenAI-compatible (`/api/style`). Personal mode builds a few-shot system prompt from the user's uploaded texts. Falls back to a rule-based stitcher when unconfigured.
 - **Voice** — ElevenLabs Instant Voice Cloning (`/api/voice/clone`, `/api/speak`, Flash v2.5), consent-gated. Falls back to the browser Web Speech API.
 - **Auth/storage** — AWS Cognito (email + password) and a private, encrypted S3 bucket per-user prefix (`users/{sub}/`). PII (URLs/emails/phones) is redacted from the text corpus before storage.

@@ -50,9 +50,19 @@ export async function POST(req: Request) {
   const user = await verifyRequest(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const { glosses, mode } = (await req.json()) as { glosses: string[]; mode: "generic" | "personal" };
-  if (!Array.isArray(glosses) || glosses.length === 0) {
-    return NextResponse.json({ error: "glosses required" }, { status: 400 });
+  const { glosses, text, mode } = (await req.json()) as {
+    glosses?: string[];
+    text?: string; // AI-vision mode: already-English sentence to restyle
+    mode: "generic" | "personal";
+  };
+  const hasGlosses = Array.isArray(glosses) && glosses.length > 0;
+  if (!hasGlosses && !text?.trim()) {
+    return NextResponse.json({ error: "glosses or text required" }, { status: 400 });
+  }
+
+  // Generic mode with already-English input needs no rewrite at all.
+  if (!hasGlosses && mode === "generic") {
+    return NextResponse.json({ sentence: text!.trim(), source: "generic" });
   }
 
   let baseURL = process.env.DO_INFERENCE_BASE_URL;
@@ -60,8 +70,9 @@ export async function POST(req: Request) {
   let model = process.env.DO_INFERENCE_MODEL;
   let usingFineTune = false;
 
-  if (mode === "personal") {
+  if (mode === "personal" && hasGlosses) {
     // Tier 1: the user's own fine-tuned model on dedicated inference.
+    // (Trained on gloss→sentence pairs, so free-text restyling stays on tier 2.)
     const modelText = await getObjectText(`${userPrefix(user.sub)}model.json`);
     if (modelText) {
       const m = JSON.parse(modelText) as UserModel;
@@ -74,16 +85,18 @@ export async function POST(req: Request) {
 
   if (!baseURL || !apiKey || !model) {
     return NextResponse.json({
-      sentence: fallbackStitch(glosses),
+      sentence: hasGlosses ? fallbackStitch(glosses!) : text!.trim(),
       source: "fallback",
       note: "DO inference not configured — using rule-based stitcher",
     });
   }
 
-  let system =
-    "You translate ASL gloss sequences into a single fluent, natural English sentence. " +
-    "Glosses are uppercase sign labels in signed order (ASL grammar, not English). " +
-    "Reply with ONLY the sentence — no quotes, no explanation.";
+  let system = hasGlosses
+    ? "You translate ASL gloss sequences into a single fluent, natural English sentence. " +
+      "Glosses are uppercase sign labels in signed order (ASL grammar, not English). " +
+      "Reply with ONLY the sentence — no quotes, no explanation."
+    : "You rewrite a sentence so it keeps the exact same meaning. " +
+      "Reply with ONLY the rewritten sentence — no quotes, no explanation.";
 
   if (usingFineTune) {
     // Must match the system prompt the model was trained with (training/prep_data.py).
@@ -122,7 +135,10 @@ export async function POST(req: Request) {
       temperature: 0.7,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Glosses: ${glosses.join(" ")}` },
+        {
+          role: "user",
+          content: hasGlosses ? `Glosses: ${glosses!.join(" ")}` : `Sentence: ${text!.trim()}`,
+        },
       ],
     });
     const sentence = res.choices[0]?.message?.content?.trim();
@@ -131,7 +147,7 @@ export async function POST(req: Request) {
   } catch (e) {
     // Degrade gracefully: never block the flow on the LLM.
     return NextResponse.json({
-      sentence: fallbackStitch(glosses),
+      sentence: hasGlosses ? fallbackStitch(glosses!) : text!.trim(),
       source: "fallback",
       note: e instanceof Error ? e.message : "inference error",
     });

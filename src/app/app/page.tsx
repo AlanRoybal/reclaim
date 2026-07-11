@@ -28,10 +28,14 @@ function Speak() {
   const { ready, error, recording, handsVisible, startRecording, stopRecording } = useHandCapture(videoRef);
 
   const [tab, setTab] = useState<"speak" | "calibrate">("speak");
+  const [recogMode, setRecogMode] = useState<"local" | "ai">("local");
   const [signs, setSigns] = useState<RecognizedSign[]>([]);
+  const [aiText, setAiText] = useState<string | null>(null);
   const [sentence, setSentence] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const frameGrabRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const framesJpegRef = useRef<string[]>([]);
 
   // Calibration state
   const [calGloss, setCalGloss] = useState<Gloss>(VOCAB[0]);
@@ -73,9 +77,51 @@ function Speak() {
     );
   }
 
+  /** Snapshot the live video into a downscaled JPEG data URL. */
+  function grabFrame(): string | null {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) return null;
+    const scale = 384 / Math.max(video.videoWidth, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.7);
+  }
+
+  async function recognizeWithAI() {
+    // Thin captured frames to 16, evenly spaced across the clip.
+    const all = framesJpegRef.current;
+    if (all.length === 0) {
+      setStatus("No frames captured — try a slightly longer recording.");
+      return;
+    }
+    const step = Math.max(1, Math.floor(all.length / 16));
+    const frames = all.filter((_, i) => i % step === 0).slice(0, 16);
+    setBusy(true);
+    setStatus("Translating your signing with AI vision…");
+    try {
+      const res = await apiFetch("/api/recognize", {
+        method: "POST",
+        body: JSON.stringify({ frames }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        setStatus(`AI vision: ${d.error} — try again or switch to calibrated signs.`);
+        return;
+      }
+      setAiText(d.text);
+      setSentence(null);
+      setStatus("AI translation below — edit if needed, then generate.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function generateSentence() {
+    const isAI = recogMode === "ai";
     const raw = signs.map((s) => s.gloss).filter(Boolean) as string[];
-    if (raw.length === 0) return;
+    if (isAI ? !aiText?.trim() : raw.length === 0) return;
     const glosses = collapseFingerspelling(raw); // C A T → CAT
     setBusy(true);
     setStatus(null);
@@ -83,7 +129,7 @@ function Speak() {
       const { mode } = getSettings();
       const res = await apiFetch("/api/style", {
         method: "POST",
-        body: JSON.stringify({ glosses, mode }),
+        body: JSON.stringify(isAI ? { text: aiText, mode } : { glosses, mode }),
       });
       const d = await res.json();
       setSentence(d.sentence);
@@ -170,11 +216,25 @@ function Speak() {
           disabled={!ready}
           onClick={() => {
             if (recording) {
-              processRecording(stopRecording());
+              if (frameGrabRef.current) {
+                clearInterval(frameGrabRef.current);
+                frameGrabRef.current = null;
+              }
+              const frames = stopRecording();
+              if (tab === "speak" && recogMode === "ai") recognizeWithAI();
+              else processRecording(frames);
             } else {
               setSigns([]);
+              setAiText(null);
               setSentence(null);
               setStatus(null);
+              framesJpegRef.current = [];
+              if (tab === "speak" && recogMode === "ai") {
+                frameGrabRef.current = setInterval(() => {
+                  const f = grabFrame();
+                  if (f) framesJpegRef.current.push(f);
+                }, 250);
+              }
               startRecording();
             }
           }}
@@ -189,13 +249,54 @@ function Speak() {
               : "● Record phrase"}
         </button>
         {tab === "speak" && (
-          <p className="text-xs text-zinc-500">Sign your phrase, pausing briefly between signs, then stop.</p>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2 text-xs">
+              {(
+                [
+                  ["local", "My signs"],
+                  ["ai", "AI vision (beta)"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setRecogMode(value)}
+                  className={`rounded px-2 py-1 ${recogMode === value ? "bg-zinc-100 text-black" : "border border-zinc-700 text-zinc-300"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-zinc-500">
+              {recogMode === "local"
+                ? "Sign your phrase, pausing briefly between signs, then stop."
+                : "Sign naturally — the clip's frames are translated by a vision model on DigitalOcean. Unproven accuracy; always check the text."}
+            </p>
+          </div>
         )}
       </div>
 
       {status && <p className="mt-3 text-sm text-zinc-300">{status}</p>}
 
-      {tab === "speak" && signs.length > 0 && (
+      {tab === "speak" && recogMode === "ai" && aiText !== null && (
+        <div className="mt-5 rounded-lg border border-zinc-800 p-4">
+          <h3 className="text-sm font-semibold text-zinc-300">AI translation (edit before speaking)</h3>
+          <textarea
+            value={aiText}
+            onChange={(e) => setAiText(e.target.value)}
+            rows={2}
+            className="mt-2 w-full rounded border border-zinc-700 bg-zinc-900 p-2 text-sm"
+          />
+          <button
+            onClick={generateSentence}
+            disabled={busy || !aiText.trim()}
+            className="mt-3 rounded bg-teal-500 px-5 py-2 font-medium text-black hover:bg-teal-400 disabled:opacity-40"
+          >
+            {busy ? "Generating…" : "Say it →"}
+          </button>
+        </div>
+      )}
+
+      {tab === "speak" && recogMode === "local" && signs.length > 0 && (
         <div className="mt-5 rounded-lg border border-zinc-800 p-4">
           <h3 className="text-sm font-semibold text-zinc-300">Recognized signs (tap to fix)</h3>
           <div className="mt-2 flex flex-wrap gap-2">
