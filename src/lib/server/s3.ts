@@ -7,8 +7,16 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-export const s3 = new S3Client({ region: process.env.AWS_REGION ?? "us-east-1" });
-export const BUCKET = process.env.S3_BUCKET!;
+// DigitalOcean Spaces — S3-compatible, so the AWS SDK works with an endpoint override.
+export const s3 = new S3Client({
+  region: process.env.SPACES_REGION ?? "nyc3",
+  endpoint: process.env.SPACES_ENDPOINT ?? "https://nyc3.digitaloceanspaces.com",
+  credentials: {
+    accessKeyId: process.env.SPACES_KEY!,
+    secretAccessKey: process.env.SPACES_SECRET!,
+  },
+});
+export const BUCKET = process.env.SPACES_BUCKET!;
 
 export function userPrefix(sub: string) {
   return `users/${sub}/`;
