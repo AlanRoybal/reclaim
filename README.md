@@ -61,11 +61,13 @@ VALKEY_URL=…                          # DO Managed Valkey (optional — cache 
 2. **Speak** — tap record, sign (or hold up 1–5 fingers for a quick phrase), stop. Fix the text if needed, then **Say it** — the room hears you.
 3. **Settings** — pick the active voice, toggle "Like me" ↔ "Plain", or delete all your data.
 
-## Fine-tuning on DO dedicated inference (built, opt-in)
+## Fine-tuning
 
 Personal style runs on a three-tier ladder, and the top tier is real model training:
 
 1. **Few-shot** — semantically retrieved examples from your corpus (always on).
 2. **Style card** — an LLM-distilled profile injected into every prompt (built per style profile).
-3. **Per-user fine-tune** — `training/` contains the complete pipeline: LoRA fine-tune of Qwen2.5-1.5B (TRL) on the user's message corpus on a DO GPU droplet → imported via DO BYOM → served on **DigitalOcean dedicated inference** as that user's own model. Runbook + provisioning script included; not yet triggered from the app UI — it's the escalation path for when prompting stops being enough.
+3. **Per-user fine-tune** — each user's message corpus trains a LoRA of Qwen2.5-1.5B (TRL)
+   on an AWS EC2 GPU instance; the tuned model is pushed to Hugging Face and served from a
+   dedicated inference endpoint as that user's own model.
 - `services/f5-tts/` — self-hosted, MIT-licensed voice cloning (F5-TTS) on a DO GPU droplet, for first-party voice biometrics at scale.

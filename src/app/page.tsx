@@ -60,7 +60,7 @@ const FEATURES = [
   },
   {
     title: "A ladder to your own model",
-    body: "Style runs in three tiers: retrieved examples, a distilled style card, and — when prompting isn't enough — a per-user LoRA fine-tune of Qwen2.5 trained on your messages and served on DigitalOcean dedicated inference as a model that's yours alone. The training pipeline ships in-repo, ready to switch on.",
+    body: "Style runs in three tiers: retrieved examples, a distilled style card, and a per-user LoRA fine-tune of Qwen2.5 trained on your messages on EC2 and served from a dedicated Hugging Face inference endpoint — a model that's yours alone.",
   },
 ];
 
@@ -70,7 +70,7 @@ const STACK = [
   ["Embeddings", "GTE-Large on DO serverless — semantic few-shot retrieval"],
   ["Voice", "ElevenLabs instant voice cloning + Flash v2.5 TTS"],
   ["TTS fallback", "Qwen3 TTS on DO Gradient, then device speech"],
-  ["Fine-tuning", "Per-user LoRA (Qwen2.5 + TRL) on DO GPU → BYOM → dedicated inference"],
+  ["Fine-tuning", "Per-user LoRA (Qwen2.5 + TRL) on EC2 → Hugging Face dedicated inference"],
   ["Cache", "DO Managed Valkey — audio keyed on (voice, sentence)"],
   ["Storage", "DO Spaces, private per-user prefix, PII-redacted"],
   ["Hosting", "DO App Platform, deployed from GitHub"],
