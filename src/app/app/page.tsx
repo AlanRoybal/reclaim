@@ -160,18 +160,18 @@ function Speak() {
       </header>
 
       {/* Camera */}
-      <div className="relative overflow-hidden rounded-2xl border border-stone-800 bg-black shadow-2xl shadow-black/40">
+      <div className="relative overflow-hidden rounded-2xl bg-black shadow-2xl shadow-black/50 ring-1 ring-white/10">
         <video ref={videoRef} playsInline muted className="aspect-[4/3] w-full -scale-x-100 object-cover" />
 
         {stage === "recording" && (
-          <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-rose-600/90 px-3 py-1 text-xs font-semibold text-white">
+          <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-rose-600/90 px-3 py-1 font-mono text-xs font-semibold tabular-nums text-white backdrop-blur">
             <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
             {`0:${String(seconds).padStart(2, "0")}`}
           </div>
         )}
 
         {stage === "translating" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-stone-950/70 backdrop-blur-sm">
+          <div className="materialize absolute inset-0 flex flex-col items-center justify-center gap-3 bg-stone-950/70 backdrop-blur-md">
             <Spinner className="h-8 w-8 text-amber-500" />
             <p className="text-sm font-medium text-stone-200">Reading your signs…</p>
           </div>
@@ -254,9 +254,9 @@ function Speak() {
 
       {/* Spoken sentence — the voice moment */}
       {sentence && stage === "spoken" && (
-        <section className="rise-in mt-4 rounded-xl border border-amber-900/50 bg-gradient-to-b from-amber-950/40 to-stone-900/40 p-5">
+        <section className="materialize mt-4 rounded-xl border border-amber-900/50 border-t-amber-800/60 bg-gradient-to-b from-amber-950/40 to-stone-900/40 p-5 shadow-xl shadow-black/30">
           <div className="flex items-start justify-between gap-4">
-            <p className="text-xl leading-snug">“{sentence}”</p>
+            <p className="display-quote text-2xl">“{sentence}”</p>
             <EqMark live={speaking} className="mt-1 h-5 shrink-0" />
           </div>
           <button onClick={sayAgain} disabled={speaking} className={`${btn.secondary} mt-4`}>

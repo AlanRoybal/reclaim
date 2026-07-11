@@ -14,7 +14,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   return (
     <div className="min-h-screen">
-      <nav className="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
+      <nav className="chrome sticky top-0 z-10">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
           <Link href="/app" className="flex items-center gap-2 text-lg font-bold tracking-tight">
             <EqMark className="h-4" />
